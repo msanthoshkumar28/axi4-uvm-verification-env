@@ -55,4 +55,171 @@ Built entirely in UVM (1.2, per `run.do`) using the standard factory and TLM con
 
 Component and object registration uses `uvm_component_utils` / `uvm_object_utils`, and constructors are standardized via the `NEW_COMP` / `NEW_OBJ` macros in `common.sv`.
 
+
 ## Testbench Architecture
+
+          m_seq1..m_seq7
+                │
+                ▼
+          m_sqr (sequencer)
+                │  seq_item_port / seq_item_export
+                ▼
+            m_drv (driver)
+                │  drives AW/W/B or AR/R
+                ▼
+         ┌───────────────┐
+         │  intf (AXI4)  │◄──────────────┐
+         └───────────────┘               │
+                │                        │
+                ▼                        │
+         s_resp (slave response model)   │
+                                         │
+                axi_mon (monitor) ───────┘
+                │           │
+          wr_ap │           │ rd_ap
+                ▼           ▼
+      ┌─────────────┐ ┌─────────────┐
+      │  axi_sbd    │ │ wr_cov/rd_cov│
+      │(scoreboard) │ │  (coverage)  │
+      └─────────────┘ └─────────────┘
+
+Data flow: **Sequence → Sequencer → Driver → Interface → Slave Response Model**, with the **Monitor** independently observing the interface and fanning transactions out to the **Scoreboard** and **Functional Coverage**.
+
+## Test Scenarios
+
+| Test | Sequence | Purpose | Stimulus | Expected Result |
+|---|---|---|---|---|
+| `test1` | `m_seq1` | Basic sanity | 1 randomized write | Write completes; no read is issued, so the scoreboard is not exercised in this test |
+| `test2` | `m_seq2` | Burst write stress | 5 randomized writes | All 5 writes complete without protocol stall |
+| `test3` | `m_seq3` | Write-then-read data integrity | 5 randomized writes (cloned and queued), followed by 5 reads targeting the same addresses | Scoreboard reports matching data for each read |
+| `test4` | `m_seq4` | Parameterized write/read (count = `` `N ``, currently 1) | `` `N `` writes, then `` `N `` reads to the same addresses, in order | Scoreboard match count increments accordingly |
+| `test5` | `m_seq5` | Out-of-program-order read | Same as `test4`, but the write queue is shuffled before reads are issued | Scoreboard must still match reads against the correct (shuffled) write addresses |
+| `test6` | `m_seq6` | FIXED burst addressing | `` `N `` writes/reads constrained to `burst_type == FIXED` | Address does not increment across beats; data matches |
+| `test7` | `m_seq7` | WRAP burst addressing | `` `N `` writes/reads constrained to `burst_type == WRAP` | Address wraps at the burst boundary; **see Known Limitations** below regarding scoreboard address tracking for WRAP |
+
+`top.sv` runs **`test6`** by default (`run_test("test6")`), with the other test names commented for manual selection.
+
+## Assertions
+
+No SystemVerilog Assertions (SVA) are present in the current files. This is listed under **Future Improvements** below — candidates would include AXI4 handshake stability checks (e.g., `valid` held until `ready`), one-hot/legal burst-type checks, and `wlast`/`rlast` alignment with burst length.
+
+## Functional Coverage
+
+Implemented in `cov.sv` via a `uvm_subscriber#(axi_tx)` sampling a covergroup on every transaction:
+
+```systemverilog
+covergroup axi_cg;
+    cp_addr: coverpoint tx.addr {
+        bins low    = {[0          : 32'h3FFF_FFFF]};
+        bins mid    = {[32'h4000_0000 : 32'h7FFF_FFFF]};
+        bins high   = {[32'h8000_0000 : 32'hFFFF_FFFF]};
+    }
+    cp_len: coverpoint tx.burst_len {
+        bins single = {0};
+        bins short  = {[1:4]};
+        bins long   = {[5:15]};
+    }
+    cp_size: coverpoint tx.burst_size {
+        bins byte1  = {0}; bins byte2 = {1}; bins byte4 = {2}; bins byte8 = {3};
+    }
+    cp_burst: coverpoint tx.burst_type {
+        bins FIXED = {0}; bins INCR = {1}; bins WRAP = {2};
+    }
+    cp_dir: coverpoint tx.wr_rd {
+        bins WRITE = {1}; bins READ = {0};
+    }
+    cx_len_x_burst: cross cp_len, cp_burst;
+    cx_dir_x_len:   cross cp_dir, cp_len;
+    cx_dir_x_burst: cross cp_dir, cp_burst;
+endgroup
+```
+
+Two instances (`wr_cov`, `rd_cov`) are connected separately to the monitor's write and read analysis ports, so write and read traffic are tracked independently.
+
+**Coverage goals/results:** No coverage database or report (`.ucdb`, HTML report, etc.) was provided, so actual coverage percentages cannot be stated here. Add a coverage report under `docs/` once you've run regression, and update this section with real numbers.
+
+## Simulation and Tools
+
+- **Simulator:** QuestaSim / ModelSim (inferred from `vlib`, `vlog`, `vsim` in `run.do`)
+- **Language:** SystemVerilog
+- **Methodology library:** UVM 1.2
+- **OS used for the provided script:** Windows (see paths in `run.do` — flagged below for portability)
+
+## How to Run the Project
+
+> The exact commands below are taken directly from `run.do`. Paths are placeholders you must update for your own machine — see the warning under item 9.
+
+1. **Required tools:** QuestaSim/ModelSim with a UVM 1.2 library installed.
+2. **Compile:**
+3. **Simulate:**
+4. **Run a specific test:** edit `run_test("testN")` in `top.sv` (`test1`–`test7`) before compiling, or override at the `vsim` command line with `+UVM_TESTNAME=testN`.
+5. **View waveforms:**
+6. **Coverage generation:** *(placeholder — not present in the provided `run.do`)*. Add `-cover` to `vlog`/`vsim` and use `vcover report` if you want a Questa coverage database.
+
+## Results
+
+No simulation transcript, pass/fail log, or coverage report was included in the provided files, so actual results cannot be reported here. The scoreboard (`sbd.sv`) prints `"TEST PASSED"` or `"TEST FAILED"` in `check_phase` based on its internal match/mismatch counters — capture and paste that output (and a coverage summary) here after running regression.
+
+## Project Files
+
+| File/Directory | Description |
+|---|---|
+| `tb/top.sv` | Top module: clock/reset generation, interface instantiation, `uvm_config_db` virtual interface set, `run_test` call |
+| `tb/common.sv` | Constructor macros and width/parameter defines |
+| `tb/intf.sv` | AXI4 signal interface |
+| `tb/axi_tx.sv` | AXI4 transaction item with randomization constraints |
+| `tb/agents/master/m_sqr.sv` | Master sequencer typedef |
+| `tb/agents/master/m_drv.sv` | Master driver (drives all 5 AXI4 channels) |
+| `tb/agents/master/m_agent.sv` | Master agent (sequencer + driver) |
+| `tb/agents/slave/s_resp.sv` | Reactive slave response model (memory + burst addressing) |
+| `tb/agents/slave/s_agent.sv` | Slave agent wrapper |
+| `tb/sequences/m_seq.sv` | Base sequence + 7 derived sequences |
+| `tb/monitor/m_mon.sv` | Passive monitor (write/read analysis ports) |
+| `tb/scoreboard/sbd.sv` | Self-checking scoreboard |
+| `tb/coverage/cov.sv` | Functional coverage subscriber |
+| `tb/env/env.sv` | Environment: instantiates and connects all components |
+| `tb/tests/test.sv` | Base test + `test1`–`test7` |
+| `sim/run.do` | QuestaSim/ModelSim compile & simulate script |
+
+## Key Learnings
+
+- Structuring a layered UVM environment: transaction → sequence → sequencer → driver → monitor → scoreboard/coverage
+- Modeling a full AXI4 channel set and burst-addressing rules (FIXED/INCR/WRAP) at the signal level
+- Using `uvm_analysis_imp_decl` to create typed analysis implementation ports for multiple imports (write/read) on one component
+- Splitting a single monitor's output into independent write/read coverage instances via separate analysis ports
+- Avoiding race conditions between a `forever` sampling loop and `fork...join_none` response tasks by capturing signal values into local variables before forking (see `s_resp.sv`)
+
+## Challenges and Solutions
+
+- **Race conditions in the reactive slave model:** driving `bready`/`rready` handshakes from `fork...join_none` tasks while the main `forever` loop continues advancing risked using stale/overwritten shared variables. This was addressed in `s_resp.sv` by capturing `araddr`, `arlen`, `arsize`, `arid`, and `wid` into local variables before forking each response task.
+- **WRAP burst addressing:** implemented independently in the slave response model (`s_resp.sv`) using lower/upper wrap-boundary calculation, but **not** mirrored in the scoreboard's memory-indexing logic (`sbd.sv`), which increments addresses linearly from the transaction's base address. This means `test7` (WRAP) may not scoreboard-check addresses correctly across a wrap boundary — worth fixing before treating WRAP coverage as verified.
+
+## Future Improvements
+
+- Integrate an actual synthesizable AXI4 slave RTL DUT in place of `s_resp.sv`
+- Add SystemVerilog Assertions for protocol-level checks (handshake stability, burst/`last` alignment, legal burst-type encoding)
+- Fix scoreboard address tracking to correctly handle WRAP bursts
+- Make the scoreboard strobe-aware (currently compares full words rather than per-byte using `wstrb`)
+- Parameterize and increase `` `N `` for more meaningful constrained-random regression length
+- Add a virtual sequence layer and a test configuration/factory-override mechanism
+- Generate and publish actual coverage reports and simulation logs
+- Replace the hardcoded Windows paths in `run.do` with relative/environment-variable paths for portability
+
+## Skills Demonstrated
+
+- [x] SystemVerilog (interfaces, classes, constraints, queues)
+- [x] UVM (agents, sequencer, driver, monitor, scoreboard, coverage subscriber, environment, test, factory)
+- [x] TLM (analysis ports/exports/imps, `uvm_config_db`)
+- [x] Constrained-random verification
+- [x] Functional coverage modeling (coverpoints + cross coverage)
+- [x] AXI4 protocol knowledge (burst types, channels, handshakes)
+- [x] Self-checking testbench design
+- [x] Race-condition-aware concurrent SystemVerilog coding
+- [x] QuestaSim/ModelSim simulation flow
+
+## Author
+
+**[SANTHOSHKUMAR M]**
+VLSI Design Verification Engineer
+[https://www.linkedin.com/in/santhoshkumar-m-b3319426a/] · [https://github.com/msanthoshkumar28] · [mrsanthosh2804@gmail.com]      
+
