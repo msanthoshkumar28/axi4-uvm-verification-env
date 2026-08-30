@@ -219,7 +219,9 @@ No simulation transcript, pass/fail log, or coverage report was included in the 
 
 ## Author
 
-**[SANTHOSHKUMAR M]**
+**SANTHOSHKUMAR M**
 VLSI Design Verification Engineer
-[https://www.linkedin.com/in/santhoshkumar-m-b3319426a/] · [https://github.com/msanthoshkumar28] · [mrsanthosh2804@gmail.com]      
+[https://www.linkedin.com/in/santhoshkumar-m-b3319426a/] 
+[https://github.com/msanthoshkumar28] 
+[mrsanthosh2804@gmail.com]      
 
